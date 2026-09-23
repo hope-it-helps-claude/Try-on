@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Virtual Try-On Demo</title>
+<style>
+  :root{
+    --bg:#f4f3f0; --panel:#ffffff; --ink:#1c1a17; --muted:#6b6560;
+    --accent:#c05a2e; --line:#e3e0da;
+    box-sizing:border-box;
+    padding-top:env(safe-area-inset-top,0px);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17140f; --panel:#221e18; --ink:#f2ede4; --muted:#a89f92;
+      --accent:#e07a45; --line:#3a342b;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17140f; --panel:#221e18; --ink:#f2ede4; --muted:#a89f92;
+    --accent:#e07a45; --line:#3a342b;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-padding-top:env(safe-area-inset-top,0px);}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    min-height:100%;
+    display:flex; flex-direction:column; align-items:center;
+    padding:20px 16px 40px;
+  }
+  h1{font-size:1.15rem; margin:4px 0 2px; letter-spacing:.2px;}
+  p.sub{color:var(--muted); font-size:.85rem; margin:0 0 16px; text-align:center; max-width:480px;}
+  .stage{
+    position:relative; width:100%; max-width:480px; aspect-ratio:3/4;
+    background:#000; border-radius:16px; overflow:hidden;
+    border:1px solid var(--line); touch-action:none;
+  }
+  video{position:absolute; inset:0; width:100%; height:100%; object-fit:cover;}
+  canvas{position:absolute; inset:0; width:100%; height:100%;}
+  .placeholder{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#cfc9bf; font-size:.9rem; text-align:center; padding:24px;
+  }
+  .panel{
+    width:100%; max-width:480px; background:var(--panel); border:1px solid var(--line);
+    border-radius:14px; padding:14px 16px; margin-top:14px;
+  }
+  .panel h2{font-size:.85rem; margin:0 0 10px; color:var(--muted); font-weight:600; letter-spacing:.3px; text-transform:uppercase;}
+  .row{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
+  .row:last-child{margin-bottom:0;}
+  label{font-size:.78rem; color:var(--muted); width:64px; flex-shrink:0;}
+  input[type=range]{flex:1; accent-color:var(--accent);}
+  input[type=url]{
+    flex:1; font:inherit; font-size:.85rem; padding:9px 10px; border-radius:8px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink);
+  }
+  .btns{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;}
+  button{
+    font:inherit; font-size:.85rem; padding:9px 14px; border-radius:10px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+    cursor:pointer;
+  }
+  button.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
+  button:active{opacity:.8;}
+  button:disabled{opacity:.5; cursor:default;}
+  input[type=file]{display:none;}
+  .status{font-size:.78rem; color:var(--muted); margin-top:10px; text-align:center; min-height:1em;}
+  .link-row{display:flex; gap:8px;}
+  .grid{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px;
+  }
+  .thumb{
+    aspect-ratio:1; border-radius:8px; overflow:hidden; border:2px solid var(--line);
+    cursor:pointer; background:var(--bg);
+  }
+  .thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+  .thumb.selected{border-color:var(--accent);}
+</style>
+</head>
+<body>
+  <h1>Virtual Try-On — Basic Demo</h1>
+  <p class="sub">Upload a clothing image or paste a product page link, then drag / resize / rotate it over your live camera feed.</p>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div class="placeholder" id="placeholder">Tap "Start Camera" below to begin</div>
+  </div>
+
+  <div class="panel">
+    <h2>Camera & Position</h2>
+    <div class="row">
+      <label>Size</label>
+      <input type="range" id="scale" min="20" max="400" value="150">
+    </div>
+    <div class="row">
+      <label>Rotate</label>
+      <input type="range" id="rotate" min="-180" max="180" value="0">
+    </div>
+    <div class="btns">
+      <button class="primary" id="startCam">Start Camera</button>
+      <button id="uploadBtn">Upload Image</button>
+      <button id="resetBtn">Reset Position</button>
+      <input type="file" id="fileInput" accept="image/*">
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Find Clothing From a Product Page</h2>
+    <div class="link-row">
+      <input type="url" id="pageUrl" placeholder="Paste a product page link (https://...)">
+      <button class="primary" id="findBtn">Find Images</button>
+    </div>
+    <div class="status" id="findStatus"></div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const stage = document.getElementById('stage');
+const placeholder = document.getElementById('placeholder');
+const statusEl = document.getElementById('status');
+const scaleRange = document.getElementById('scale');
+const rotateRange = document.getElementById('rotate');
+
+let img = null;
+let pos = null;
+let scale = 150;
+let rotation = 0;
+let dragging = false;
+let dragOffset = {x:0,y:0};
+
+function resizeCanvas(){
+  const rect = stage.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  if(!pos) pos = {x: canvas.width/2, y: canvas.height/2};
+  draw();
+}
+window.addEventListener('resize', resizeCanvas);
+
+async function startCamera(){
+  statusEl.textContent = 'Requesting camera access…';
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
+    video.srcObject = stream;
+    placeholder.style.display = 'none';
+    statusEl.textContent = 'Camera live.';
+    resizeCanvas();
+  }catch(err){
+    statusEl.textContent = 'Could not access camera: ' + err.message + '. Check browser permissions.';
+  }
+}
+
+function setImage(image){
+  img = image;
+  pos = {x: canvas.width/2, y: canvas.height/2};
+  draw();
+}
+
+function loadImageFile(file){
+  const reader = new FileReader();
+  reader.onload = e => {
+    const image = new Image();
+    image.onload = () => { setImage(image); statusEl.textContent = 'Clothing image loaded — drag to position it.'; };
+    image.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function loadImageFromUrl(url){
+  const image = new Image();
+  image.onload = () => { setImage(image); statusEl.textContent = 'Clothing image loaded — drag to position it.'; };
+  image.onerror = () => { statusEl.textContent = 'That image could not be loaded (the site may block hotlinking). Try another one.'; };
+  image.src = url;
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!img || !pos) return;
+  const w = scale;
+  const h = scale * (img.height/img.width);
+  ctx.save();
+  ctx.translate(pos.x,pos.y);
+  ctx.rotate(rotation * Math.PI/180);
+  ctx.globalAlpha = 0.95;
+  ctx.drawImage(img, -w/2, -h/2, w, h);
+  ctx.restore();
+}
+
+function getPoint(e){
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches ? e.touches[0] : e;
+  return {x: t.clientX - rect.left, y: t.clientY - rect.top};
+}
+
+canvas.addEventListener('pointerdown', e=>{
+  if(!img) return;
+  const p = getPoint(e);
+  dragging = true;
+  dragOffset = {x: p.x - pos.x, y: p.y - pos.y};
+});
+canvas.addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  const p = getPoint(e);
+  pos = {x: p.x - dragOffset.x, y: p.y - dragOffset.y};
+  draw();
+});
+window.addEventListener('pointerup', ()=> dragging=false);
+
+scaleRange.addEventListener('input', e=>{ scale = +e.target.value; draw(); });
+rotateRange.addEventListener('input', e=>{ rotation = +e.target.value; draw(); });
+
+document.getElementById('startCam').addEventListener('click', startCamera);
+document.getElementById('uploadBtn').addEventListener('click', ()=> document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', e=>{
+  if(e.target.files[0]) loadImageFile(e.target.files[0]);
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  pos = {x: canvas.width/2, y: canvas.height/2};
+  scale = 150; rotation = 0;
+  scaleRange.value = 150; rotateRange.value = 0;
+  draw();
+});
+
+// --- Product page image finder ---
+const findBtn = document.getElementById('findBtn');
+const pageUrlInput = document.getElementById('pageUrl');
+const findStatus = document.getElementById('findStatus');
+const grid = document.getElementById('grid');
+
+async function findImages(){
+  const url = pageUrlInput.value.trim();
+  if(!url){ findStatus.textContent = 'Paste a product page link first.'; return; }
+  findBtn.disabled = true;
+  findStatus.textContent = 'Fetching page and looking for images…';
+  grid.innerHTML = '';
+  try{
+    const res = await fetch('/.netlify/functions/fetch-images?url=' + encodeURIComponent(url));
+    const data = await res.json();
+    if(!res.ok || data.error){
+      findStatus.textContent = data.error || 'Something went wrong.';
+      return;
+    }
+    if(data.images.length === 0){
+      findStatus.textContent = 'No images found on that page (it may load images via JavaScript, which this simple version can\'t see).';
+      return;
+    }
+    findStatus.textContent = `Found ${data.images.length} image(s) — tap one to try it on.`;
+    data.images.forEach(src => {
+      const div = document.createElement('div');
+      div.className = 'thumb';
+      const image = document.createElement('img');
+      image.src = src;
+      image.loading = 'lazy';
+      image.onerror = () => { div.style.display = 'none'; };
+      div.appendChild(image);
+      div.addEventListener('click', () => {
+        [...grid.children].forEach(c => c.classList.remove('selected'));
+        div.classList.add('selected');
+        loadImageFromUrl(src);
+      });
+      grid.appendChild(div);
+    });
+  }catch(err){
+    findStatus.textContent = 'Request failed: ' + err.message;
+  }finally{
+    findBtn.disabled = false;
+  }
+}
+findBtn.addEventListener('click', findImages);
+pageUrlInput.addEventListener('keydown', e => { if(e.key === 'Enter') findImages(); });
+
+resizeCanvas();
+setInterval(draw, 200);
+</script>
+</body>
+</html>
