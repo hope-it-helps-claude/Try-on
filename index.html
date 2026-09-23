@@ -231,11 +231,36 @@ function removeWhiteBackground(source, tolerance=28){
   return off;
 }
 
+function trimTransparentMargins(canvas){
+  const w = canvas.width, h = canvas.height;
+  const cctx = canvas.getContext('2d');
+  const data = cctx.getImageData(0, 0, w, h).data;
+  let minX=w, minY=h, maxX=-1, maxY=-1;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      if(data[(y*w+x)*4+3] > 10){
+        if(x<minX) minX=x;
+        if(x>maxX) maxX=x;
+        if(y<minY) minY=y;
+        if(y>maxY) maxY=y;
+      }
+    }
+  }
+  if(maxX < 0) return canvas; // nothing visible, bail out
+  const bw = maxX-minX+1, bh = maxY-minY+1;
+  const trimmed = document.createElement('canvas');
+  trimmed.width = bw; trimmed.height = bh;
+  trimmed.getContext('2d').drawImage(canvas, minX, minY, bw, bh, 0, 0, bw, bh);
+  return trimmed;
+}
+
 function applyImage(source, allowBgRemoval){
   if(bgRemoveToggle.checked && allowBgRemoval){
     try{
-      img = removeWhiteBackground(source);
-      statusEl.textContent = 'Loaded — background removed.';
+      let processed = removeWhiteBackground(source);
+      processed = trimTransparentMargins(processed); // crop to the actual garment, so its top edge = shoulder line
+      img = processed;
+      statusEl.textContent = 'Loaded — background removed and cropped to the garment shape.';
     }catch(e){
       img = source;
       statusEl.textContent = 'Loaded, but this image can\'t have its background removed (the site blocks that). Try saving it and using "Upload Image" instead.';
@@ -411,7 +436,11 @@ async function poseLoop(){
         const midX = (shoulderL.x + shoulderR.x)/2;
         const midY = (shoulderL.y + shoulderR.y)/2;
         const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
-        const angle = Math.atan2(shoulderR.y-shoulderL.y, shoulderR.x-shoulderL.x) * 180/Math.PI;
+        // The camera feed is NOT mirrored, so the person's anatomical LEFT shoulder
+        // appears on the screen's RIGHT side. We measure the angle from screen-right
+        // to screen-left (i.e. from shoulderL to shoulderR) so the garment sits upright
+        // instead of rotated ~180°.
+        const angle = Math.atan2(shoulderL.y-shoulderR.y, shoulderL.x-shoulderR.x) * 180/Math.PI;
 
         let torsoLen = shoulderDist * 1.4;
         if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
@@ -425,7 +454,7 @@ async function poseLoop(){
         pos = {x: midX, y: midY};
         scaleW = shoulderDist * 1.9 * fit;
         scaleH = torsoLen * 1.35 * fit;
-        anchorY = 0.14;
+        anchorY = 0.04; // garment image is now trimmed to its own edges, so its top ≈ shoulder line
         rotation = angle;
         draw();
       } else {
