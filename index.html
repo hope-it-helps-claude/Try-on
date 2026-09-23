@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Virtual Try-On Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/[email protected]/dist/pose-detection.min.js"></script>
 <style>
   :root{
     --bg:#f4f3f0; --panel:#ffffff; --ink:#1c1a17; --muted:#6b6560;
@@ -42,7 +44,7 @@
   canvas{position:absolute; inset:0; width:100%; height:100%;}
   .placeholder{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    color:#cfc9bf; font-size:.9rem; text-align:center; padding:24px;
+    color:#cfc9bf; font-size:.9rem; text-align:center; padding:24px; z-index:2;
   }
   .panel{
     width:100%; max-width:480px; background:var(--panel); border:1px solid var(--line);
@@ -51,12 +53,15 @@
   .panel h2{font-size:.85rem; margin:0 0 10px; color:var(--muted); font-weight:600; letter-spacing:.3px; text-transform:uppercase;}
   .row{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
   .row:last-child{margin-bottom:0;}
-  label{font-size:.78rem; color:var(--muted); width:64px; flex-shrink:0;}
+  label{font-size:.78rem; color:var(--muted); width:110px; flex-shrink:0;}
   input[type=range]{flex:1; accent-color:var(--accent);}
   input[type=url]{
     flex:1; font:inherit; font-size:.85rem; padding:9px 10px; border-radius:8px;
     border:1px solid var(--line); background:var(--bg); color:var(--ink);
   }
+  .switch-row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px;}
+  .switch-row:last-child{margin-bottom:0;}
+  .switch-row span{font-size:.85rem;}
   .btns{display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;}
   button{
     font:inherit; font-size:.85rem; padding:9px 14px; border-radius:10px;
@@ -69,20 +74,21 @@
   input[type=file]{display:none;}
   .status{font-size:.78rem; color:var(--muted); margin-top:10px; text-align:center; min-height:1em;}
   .link-row{display:flex; gap:8px;}
-  .grid{
-    display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px;
-  }
-  .thumb{
-    aspect-ratio:1; border-radius:8px; overflow:hidden; border:2px solid var(--line);
-    cursor:pointer; background:var(--bg);
-  }
+  .grid{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:12px;}
+  .thumb{aspect-ratio:1; border-radius:8px; overflow:hidden; border:2px solid var(--line); cursor:pointer; background:var(--bg);}
   .thumb img{width:100%; height:100%; object-fit:cover; display:block;}
   .thumb.selected{border-color:var(--accent);}
+  .toggle{position:relative; width:42px; height:24px; flex-shrink:0;}
+  .toggle input{opacity:0; width:0; height:0;}
+  .slider{position:absolute; inset:0; background:var(--line); border-radius:24px; cursor:pointer; transition:.15s;}
+  .slider:before{content:""; position:absolute; height:18px; width:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.15s;}
+  input:checked + .slider{background:var(--accent);}
+  input:checked + .slider:before{transform:translateX(18px);}
 </style>
 </head>
 <body>
-  <h1>Virtual Try-On — Basic Demo</h1>
-  <p class="sub">Upload a clothing image or paste a product page link, then drag / resize / rotate it over your live camera feed.</p>
+  <h1>Virtual Try-On — Demo</h1>
+  <p class="sub">Upload a clothing image or paste a product page link. Turn on auto-tracking to have it follow your body, or drag it manually.</p>
 
   <div class="stage" id="stage">
     <video id="video" autoplay playsinline muted></video>
@@ -91,13 +97,21 @@
   </div>
 
   <div class="panel">
-    <h2>Camera & Position</h2>
-    <div class="row">
-      <label>Size</label>
+    <h2>Camera & Tracking</h2>
+    <div class="switch-row">
+      <span>Auto body-tracking</span>
+      <label class="toggle"><input type="checkbox" id="autoTrack"><span class="slider"></span></label>
+    </div>
+    <div class="row" id="fitRow">
+      <label>Fit size</label>
+      <input type="range" id="fitAdjust" min="50" max="200" value="100">
+    </div>
+    <div class="row" id="scaleRow">
+      <label>Size (manual)</label>
       <input type="range" id="scale" min="20" max="400" value="150">
     </div>
-    <div class="row">
-      <label>Rotate</label>
+    <div class="row" id="rotateRow">
+      <label>Rotate (manual)</label>
       <input type="range" id="rotate" min="-180" max="180" value="0">
     </div>
     <div class="btns">
@@ -105,6 +119,14 @@
       <button id="uploadBtn">Upload Image</button>
       <button id="resetBtn">Reset Position</button>
       <input type="file" id="fileInput" accept="image/*">
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Background</h2>
+    <div class="switch-row">
+      <span>Remove white background automatically</span>
+      <label class="toggle"><input type="checkbox" id="bgRemove" checked><span class="slider"></span></label>
     </div>
   </div>
 
@@ -129,19 +151,37 @@ const placeholder = document.getElementById('placeholder');
 const statusEl = document.getElementById('status');
 const scaleRange = document.getElementById('scale');
 const rotateRange = document.getElementById('rotate');
+const fitAdjust = document.getElementById('fitAdjust');
+const autoTrackToggle = document.getElementById('autoTrack');
+const bgRemoveToggle = document.getElementById('bgRemove');
+const scaleRow = document.getElementById('scaleRow');
+const rotateRow = document.getElementById('rotateRow');
+const fitRow = document.getElementById('fitRow');
 
 let img = null;
-let pos = null;
+let pos = {x:0,y:0};
 let scale = 150;
 let rotation = 0;
-let dragging = false;
-let dragOffset = {x:0,y:0};
+let anchorY = 0.5;
+let scaleW = 150, scaleH = 0;
+let dragging = false, dragOffset = {x:0,y:0};
+
+let detector = null;
+let poseLoopRunning = false;
+
+function updateModeUI(){
+  const auto = autoTrackToggle.checked;
+  scaleRow.style.display = auto ? 'none' : 'flex';
+  rotateRow.style.display = auto ? 'none' : 'flex';
+  fitRow.style.display = auto ? 'flex' : 'none';
+}
+updateModeUI();
 
 function resizeCanvas(){
   const rect = stage.getBoundingClientRect();
   canvas.width = rect.width;
   canvas.height = rect.height;
-  if(!pos) pos = {x: canvas.width/2, y: canvas.height/2};
+  if(!pos.x) pos = {x: canvas.width/2, y: canvas.height/2};
   draw();
 }
 window.addEventListener('resize', resizeCanvas);
@@ -151,6 +191,7 @@ async function startCamera(){
   try{
     const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false});
     video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
     placeholder.style.display = 'none';
     statusEl.textContent = 'Camera live.';
     resizeCanvas();
@@ -159,8 +200,52 @@ async function startCamera(){
   }
 }
 
-function setImage(image){
-  img = image;
+function removeWhiteBackground(source, tolerance=28){
+  const w = source.naturalWidth || source.width;
+  const h = source.naturalHeight || source.height;
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const octx = off.getContext('2d');
+  octx.drawImage(source, 0, 0, w, h);
+  const data = octx.getImageData(0, 0, w, h);
+  const px = data.data;
+  const visited = new Uint8Array(w*h);
+  const isNearWhite = (i) => {
+    const r = px[i*4], g = px[i*4+1], b = px[i*4+2];
+    return r > 255-tolerance && g > 255-tolerance && b > 255-tolerance;
+  };
+  const stack = [];
+  for(let x=0;x<w;x++){ stack.push(x); stack.push(x + (h-1)*w); }
+  for(let y=0;y<h;y++){ stack.push(y*w); stack.push(y*w + (w-1)); }
+  while(stack.length){
+    const idx = stack.pop();
+    if(idx<0 || idx>=w*h || visited[idx]) continue;
+    visited[idx] = 1;
+    if(!isNearWhite(idx)) continue;
+    px[idx*4+3] = 0;
+    const x = idx % w, y = (idx / w) | 0;
+    if(x>0) stack.push(idx-1);
+    if(x<w-1) stack.push(idx+1);
+    if(y>0) stack.push(idx-w);
+    if(y<h-1) stack.push(idx+w);
+  }
+  octx.putImageData(data, 0, 0);
+  return off;
+}
+
+function applyImage(source, allowBgRemoval){
+  if(bgRemoveToggle.checked && allowBgRemoval){
+    try{
+      img = removeWhiteBackground(source);
+      statusEl.textContent = 'Loaded — background removed.';
+    }catch(e){
+      img = source;
+      statusEl.textContent = 'Loaded, but this image can\'t have its background removed (the site blocks that). Try saving it and using "Upload Image" instead.';
+    }
+  } else {
+    img = source;
+    statusEl.textContent = 'Loaded — drag to position (or turn on auto-tracking).';
+  }
   pos = {x: canvas.width/2, y: canvas.height/2};
   draw();
 }
@@ -169,29 +254,43 @@ function loadImageFile(file){
   const reader = new FileReader();
   reader.onload = e => {
     const image = new Image();
-    image.onload = () => { setImage(image); statusEl.textContent = 'Clothing image loaded — drag to position it.'; };
+    image.onload = () => applyImage(image, true);
     image.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
 
 function loadImageFromUrl(url){
-  const image = new Image();
-  image.onload = () => { setImage(image); statusEl.textContent = 'Clothing image loaded — drag to position it.'; };
-  image.onerror = () => { statusEl.textContent = 'That image could not be loaded (the site may block hotlinking). Try another one.'; };
-  image.src = url;
+  statusEl.textContent = 'Loading image…';
+  const attempt = (withCors) => new Promise((resolve, reject) => {
+    const image = new Image();
+    if(withCors) image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+  attempt(true)
+    .then(image => applyImage(image, true))
+    .catch(() => {
+      attempt(false)
+        .then(image => applyImage(image, false))
+        .catch(() => { statusEl.textContent = 'That image could not be loaded (the site may block hotlinking). Try another one.'; });
+    });
 }
 
 function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(!img || !pos) return;
-  const w = scale;
-  const h = scale * (img.height/img.width);
+  if(!img) return;
+  const iw = img.width || img.naturalWidth;
+  const ih = img.height || img.naturalHeight;
+  const aspect = ih / iw;
+  const w = scaleW;
+  const h = scaleH || (w * aspect);
   ctx.save();
-  ctx.translate(pos.x,pos.y);
+  ctx.translate(pos.x, pos.y);
   ctx.rotate(rotation * Math.PI/180);
   ctx.globalAlpha = 0.95;
-  ctx.drawImage(img, -w/2, -h/2, w, h);
+  ctx.drawImage(img, -w/2, -h*anchorY, w, h);
   ctx.restore();
 }
 
@@ -202,7 +301,7 @@ function getPoint(e){
 }
 
 canvas.addEventListener('pointerdown', e=>{
-  if(!img) return;
+  if(!img || autoTrackToggle.checked) return;
   const p = getPoint(e);
   dragging = true;
   dragOffset = {x: p.x - pos.x, y: p.y - pos.y};
@@ -215,7 +314,13 @@ canvas.addEventListener('pointermove', e=>{
 });
 window.addEventListener('pointerup', ()=> dragging=false);
 
-scaleRange.addEventListener('input', e=>{ scale = +e.target.value; draw(); });
+scaleRange.addEventListener('input', e=>{
+  scale = +e.target.value;
+  scaleW = scale;
+  scaleH = 0;
+  anchorY = 0.5;
+  draw();
+});
 rotateRange.addEventListener('input', e=>{ rotation = +e.target.value; draw(); });
 
 document.getElementById('startCam').addEventListener('click', startCamera);
@@ -225,12 +330,89 @@ document.getElementById('fileInput').addEventListener('change', e=>{
 });
 document.getElementById('resetBtn').addEventListener('click', ()=>{
   pos = {x: canvas.width/2, y: canvas.height/2};
-  scale = 150; rotation = 0;
+  scale = 150; rotation = 0; scaleW = 150; scaleH = 0; anchorY = 0.5;
   scaleRange.value = 150; rotateRange.value = 0;
   draw();
 });
 
-// --- Product page image finder ---
+async function ensureDetector(){
+  if(detector) return detector;
+  statusEl.textContent = 'Loading pose-tracking model (first time only)…';
+  await tf.setBackend('webgl');
+  await tf.ready();
+  detector = await poseDetection.createDetector(
+    poseDetection.SupportedModels.MoveNet,
+    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+  );
+  statusEl.textContent = 'Pose model ready.';
+  return detector;
+}
+
+function mapVideoPointToCanvas(vx, vy){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const cw = canvas.width, ch = canvas.height;
+  const s = Math.max(cw / vw, ch / vh);
+  const dw = vw * s, dh = vh * s;
+  const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
+  return { x: vx * s + ox, y: vy * s + oy };
+}
+
+async function poseLoop(){
+  if(!autoTrackToggle.checked){ poseLoopRunning = false; return; }
+  poseLoopRunning = true;
+  try{
+    if(img && video.readyState >= 2){
+      const poses = await detector.estimatePoses(video);
+      const kp = {};
+      if(poses[0]) poses[0].keypoints.forEach(k => kp[k.name] = k);
+      const ls = kp['left_shoulder'], rs = kp['right_shoulder'];
+      const lh = kp['left_hip'], rh = kp['right_hip'];
+      if(ls && rs && ls.score > 0.3 && rs.score > 0.3){
+        const shoulderL = mapVideoPointToCanvas(ls.x, ls.y);
+        const shoulderR = mapVideoPointToCanvas(rs.x, rs.y);
+        const midX = (shoulderL.x + shoulderR.x)/2;
+        const midY = (shoulderL.y + shoulderR.y)/2;
+        const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
+        const angle = Math.atan2(shoulderR.y-shoulderL.y, shoulderR.x-shoulderL.x) * 180/Math.PI;
+
+        let torsoLen = shoulderDist * 1.4;
+        if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
+          const hipL = mapVideoPointToCanvas(lh.x, lh.y);
+          const hipR = mapVideoPointToCanvas(rh.x, rh.y);
+          const hipMidY = (hipL.y + hipR.y)/2;
+          torsoLen = Math.max(hipMidY - midY, shoulderDist);
+        }
+
+        const fit = (+fitAdjust.value) / 100;
+        pos = {x: midX, y: midY};
+        scaleW = shoulderDist * 1.9 * fit;
+        scaleH = torsoLen * 1.35 * fit;
+        anchorY = 0.14;
+        rotation = angle;
+        draw();
+      }
+    }
+  }catch(e){ /* keep looping even if a single frame fails */ }
+  requestAnimationFrame(poseLoop);
+}
+
+autoTrackToggle.addEventListener('change', async ()=>{
+  updateModeUI();
+  if(autoTrackToggle.checked){
+    if(video.readyState < 2){
+      statusEl.textContent = 'Start the camera first.';
+      autoTrackToggle.checked = false;
+      updateModeUI();
+      return;
+    }
+    await ensureDetector();
+    if(!poseLoopRunning) poseLoop();
+  } else {
+    statusEl.textContent = 'Manual mode.';
+  }
+});
+fitAdjust.addEventListener('input', draw);
+
 const findBtn = document.getElementById('findBtn');
 const pageUrlInput = document.getElementById('pageUrl');
 const findStatus = document.getElementById('findStatus');
@@ -245,10 +427,7 @@ async function findImages(){
   try{
     const res = await fetch('/.netlify/functions/fetch-images?url=' + encodeURIComponent(url));
     const data = await res.json();
-    if(!res.ok || data.error){
-      findStatus.textContent = data.error || 'Something went wrong.';
-      return;
-    }
+    if(!res.ok || data.error){ findStatus.textContent = data.error || 'Something went wrong.'; return; }
     if(data.images.length === 0){
       findStatus.textContent = 'No images found on that page (it may load images via JavaScript, which this simple version can\'t see).';
       return;
@@ -279,7 +458,7 @@ findBtn.addEventListener('click', findImages);
 pageUrlInput.addEventListener('keydown', e => { if(e.key === 'Enter') findImages(); });
 
 resizeCanvas();
-setInterval(draw, 200);
+setInterval(()=>{ if(!autoTrackToggle.checked) draw(); }, 200);
 </script>
 </body>
 </html>
