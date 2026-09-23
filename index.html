@@ -354,21 +354,17 @@ let librariesLoaded = false;
 async function ensureLibraries(){
   if(librariesLoaded && typeof tf !== 'undefined' && typeof poseDetection !== 'undefined') return;
   statusEl.textContent = 'Downloading pose-tracking libraries…';
+  // Tries a self-hosted copy first (fastest, and immune to CDN/network blockers),
+  // then falls back to public CDNs if the self-hosted file isn't present yet.
   await loadWithFallback([
-    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-core.min.js',
-    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-core.min.js'
+    './vendor/tf.min.js',
+    'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js',
+    'https://unpkg.com/@tensorflow/tfjs@latest/dist/tf.min.js'
   ]);
   await loadWithFallback([
-    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-converter.min.js',
-    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-converter.min.js'
-  ]);
-  await loadWithFallback([
-    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-backend-webgl.min.js',
-    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-backend-webgl.min.js'
-  ]);
-  await loadWithFallback([
-    'https://cdn.jsdelivr.net/npm/@tensorflow-models/[email protected]/dist/pose-detection.min.js',
-    'https://unpkg.com/@tensorflow-models/[email protected]/dist/pose-detection.min.js'
+    './vendor/pose-detection.min.js',
+    'https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@latest/dist/pose-detection.min.js',
+    'https://unpkg.com/@tensorflow-models/pose-detection@latest/dist/pose-detection.min.js'
   ]);
   if(typeof tf === 'undefined' || typeof poseDetection === 'undefined'){
     throw new Error('Libraries downloaded but did not initialize (tf or poseDetection is undefined). Check the browser console.');
