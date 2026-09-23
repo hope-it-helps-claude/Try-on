@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Virtual Try-On Demo</title>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/[email protected]/dist/pose-detection.min.js"></script>
 <style>
   :root{
     --bg:#f4f3f0; --panel:#ffffff; --ink:#1c1a17; --muted:#6b6560;
@@ -335,11 +333,52 @@ document.getElementById('resetBtn').addEventListener('click', ()=>{
   draw();
 });
 
+function loadScript(url){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Could not download ' + url));
+    document.head.appendChild(s);
+  });
+}
+async function loadWithFallback(urls){
+  let lastErr;
+  for(const url of urls){
+    try{ await loadScript(url); return; }catch(e){ lastErr = e; console.warn(e.message); }
+  }
+  throw lastErr;
+}
+
+let librariesLoaded = false;
+async function ensureLibraries(){
+  if(librariesLoaded && typeof tf !== 'undefined' && typeof poseDetection !== 'undefined') return;
+  statusEl.textContent = 'Downloading pose-tracking libraries…';
+  await loadWithFallback([
+    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-core.min.js',
+    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-core.min.js'
+  ]);
+  await loadWithFallback([
+    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-converter.min.js',
+    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-converter.min.js'
+  ]);
+  await loadWithFallback([
+    'https://cdn.jsdelivr.net/npm/@tensorflow/[email protected]/dist/tf-backend-webgl.min.js',
+    'https://unpkg.com/@tensorflow/[email protected]/dist/tf-backend-webgl.min.js'
+  ]);
+  await loadWithFallback([
+    'https://cdn.jsdelivr.net/npm/@tensorflow-models/[email protected]/dist/pose-detection.min.js',
+    'https://unpkg.com/@tensorflow-models/[email protected]/dist/pose-detection.min.js'
+  ]);
+  if(typeof tf === 'undefined' || typeof poseDetection === 'undefined'){
+    throw new Error('Libraries downloaded but did not initialize (tf or poseDetection is undefined). Check the browser console.');
+  }
+  librariesLoaded = true;
+}
+
 async function ensureDetector(){
   if(detector) return detector;
-  if(typeof tf === 'undefined' || typeof poseDetection === 'undefined'){
-    throw new Error('Pose-tracking library failed to load from the CDN (check your internet connection, an ad-blocker, or open the browser console for the exact error).');
-  }
+  await ensureLibraries();
   statusEl.textContent = 'Loading pose-tracking model (first time only)…';
   await tf.setBackend('webgl');
   await tf.ready();
