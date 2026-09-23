@@ -107,6 +107,10 @@
       <span>Auto body-tracking</span>
       <label class="toggle"><input type="checkbox" id="autoTrack"><span class="slider"></span></label>
     </div>
+    <div class="switch-row">
+      <span>Mirror camera (selfie view)</span>
+      <label class="toggle"><input type="checkbox" id="mirrorToggle"><span class="slider"></span></label>
+    </div>
     <div class="row" id="fitRow">
       <label>Fit size</label>
       <input type="range" id="fitAdjust" min="50" max="200" value="100">
@@ -150,6 +154,19 @@
   </div>
 
   <div class="panel">
+    <h2>Manual Shoulder Calibration <span style="font-weight:400; text-transform:none;">(optional — improves fit accuracy)</span></h2>
+    <p class="sub" style="margin:0 0 12px; text-align:left; max-width:none;">Mark the shoulder points on the clothing photo, then either mark them on the camera (for manual placement) or just enable auto-tracking — it'll use this calibration automatically for a much better fit than the default guess.</p>
+    <div class="btns" style="margin-top:0;">
+      <button id="markImageBtn">Mark Shoulders on Image</button>
+      <button id="markCameraBtn">Mark Shoulders on Camera</button>
+      <button class="primary" id="applyCalibBtn">Apply to Manual Position</button>
+      <button id="clearCalibBtn">Clear Marks</button>
+    </div>
+    <canvas id="imgMarkCanvas" style="display:none; width:100%; max-width:360px; border-radius:8px; margin-top:12px; touch-action:none; cursor:crosshair; border:1px solid var(--line);"></canvas>
+    <div class="status" id="calibStatus"></div>
+  </div>
+
+  <div class="panel">
     <h2>Find Clothing From a Product Page</h2>
     <div class="link-row">
       <input type="url" id="pageUrl" placeholder="Paste a product page link (https://...)">
@@ -175,19 +192,32 @@ const aspectSelect = document.getElementById('aspectSelect');
 const featherRange = document.getElementById('feather');
 const garmentType = document.getElementById('garmentType');
 const autoTrackToggle = document.getElementById('autoTrack');
+const mirrorToggle = document.getElementById('mirrorToggle');
 const bgRemoveToggle = document.getElementById('bgRemove');
 const scaleRow = document.getElementById('scaleRow');
 const rotateRow = document.getElementById('rotateRow');
 const fitRow = document.getElementById('fitRow');
+const markImageBtn = document.getElementById('markImageBtn');
+const markCameraBtn = document.getElementById('markCameraBtn');
+const applyCalibBtn = document.getElementById('applyCalibBtn');
+const clearCalibBtn = document.getElementById('clearCalibBtn');
+const imgMarkCanvas = document.getElementById('imgMarkCanvas');
+const calibStatus = document.getElementById('calibStatus');
 
 let img = null;
 let baseImg = null; // the clean (trimmed, background-removed) image, before feather is applied
 let pos = {x:0,y:0};
 let scale = 150;
 let rotation = 0;
-let anchorY = 0.5;
+let anchorX = 0.5, anchorY = 0.5;
 let scaleW = 150, scaleH = 0;
 let dragging = false, dragOffset = {x:0,y:0};
+
+// Manual shoulder calibration
+let imgShoulderL = null, imgShoulderR = null; // pixel coords on baseImg
+let camShoulderL = null, camShoulderR = null; // canvas pixel coords
+let markingImageStep = 0; // 0 = idle, 1 = waiting for left click, 2 = waiting for right click
+let markingCameraStep = 0;
 
 let detector = null;
 let poseLoopRunning = false;
@@ -296,6 +326,8 @@ function applyFeather(){
 }
 
 function applyImage(source, allowBgRemoval){
+  imgShoulderL = null; imgShoulderR = null; // old marks would no longer be valid for this image
+  imgMarkCanvas.style.display = 'none';
   if(bgRemoveToggle.checked && allowBgRemoval){
     try{
       let processed = removeWhiteBackground(source);
@@ -354,7 +386,7 @@ function draw(){
   ctx.translate(pos.x, pos.y);
   ctx.rotate(rotation * Math.PI/180);
   ctx.globalAlpha = 0.95;
-  ctx.drawImage(img, -w/2, -h*anchorY, w, h);
+  ctx.drawImage(img, -w*anchorX, -h*anchorY, w, h);
   ctx.restore();
 }
 
@@ -365,8 +397,20 @@ function getPoint(e){
 }
 
 canvas.addEventListener('pointerdown', e=>{
-  if(!img || autoTrackToggle.checked) return;
   const p = getPoint(e);
+  if(markingCameraStep === 1){
+    camShoulderL = p;
+    markingCameraStep = 2;
+    calibStatus.textContent = 'Now tap your RIGHT shoulder on the camera preview.';
+    return;
+  }
+  if(markingCameraStep === 2){
+    camShoulderR = p;
+    markingCameraStep = 0;
+    calibStatus.textContent = 'Camera shoulders marked. Click "Apply to Manual Position" when ready.';
+    return;
+  }
+  if(!img || autoTrackToggle.checked) return;
   dragging = true;
   dragOffset = {x: p.x - pos.x, y: p.y - pos.y};
 });
@@ -382,6 +426,7 @@ scaleRange.addEventListener('input', e=>{
   scale = +e.target.value;
   scaleW = scale;
   scaleH = 0;
+  anchorX = 0.5;
   anchorY = 0.5;
   draw();
 });
@@ -394,9 +439,78 @@ document.getElementById('fileInput').addEventListener('change', e=>{
 });
 document.getElementById('resetBtn').addEventListener('click', ()=>{
   pos = {x: canvas.width/2, y: canvas.height/2};
-  scale = 150; rotation = 0; scaleW = 150; scaleH = 0; anchorY = 0.5;
+  scale = 150; rotation = 0; scaleW = 150; scaleH = 0; anchorX = 0.5; anchorY = 0.5;
   scaleRange.value = 150; rotateRange.value = 0;
   draw();
+});
+
+mirrorToggle.addEventListener('change', ()=>{
+  video.style.transform = mirrorToggle.checked ? 'scaleX(-1)' : 'none';
+});
+
+markImageBtn.addEventListener('click', ()=>{
+  if(!baseImg){ calibStatus.textContent = 'Load a clothing image first.'; return; }
+  imgShoulderL = null; imgShoulderR = null;
+  markingImageStep = 1;
+  const iw = baseImg.width, ih = baseImg.height;
+  const displayScale = Math.min(360 / iw, 1);
+  imgMarkCanvas.width = Math.round(iw * displayScale);
+  imgMarkCanvas.height = Math.round(ih * displayScale);
+  imgMarkCanvas.dataset.scale = displayScale;
+  imgMarkCanvas.style.display = 'block';
+  const ictx = imgMarkCanvas.getContext('2d');
+  ictx.clearRect(0,0,imgMarkCanvas.width,imgMarkCanvas.height);
+  ictx.drawImage(baseImg, 0, 0, imgMarkCanvas.width, imgMarkCanvas.height);
+  calibStatus.textContent = 'Tap the LEFT shoulder point on the image.';
+});
+
+imgMarkCanvas.addEventListener('click', e=>{
+  if(markingImageStep === 0) return;
+  const rect = imgMarkCanvas.getBoundingClientRect();
+  const scaleX = imgMarkCanvas.width / rect.width, scaleY = imgMarkCanvas.height / rect.height;
+  const dx = (e.clientX - rect.left) * scaleX;
+  const dy = (e.clientY - rect.top) * scaleY;
+  const s = +imgMarkCanvas.dataset.scale;
+  const point = {x: dx / s, y: dy / s}; // convert back to original baseImg pixel coords
+  const ictx = imgMarkCanvas.getContext('2d');
+  ictx.fillStyle = '#c05a2e';
+  ictx.beginPath(); ictx.arc(dx, dy, 5, 0, Math.PI*2); ictx.fill();
+  if(markingImageStep === 1){
+    imgShoulderL = point;
+    markingImageStep = 2;
+    calibStatus.textContent = 'Now tap the RIGHT shoulder point on the image.';
+  } else if(markingImageStep === 2){
+    imgShoulderR = point;
+    markingImageStep = 0;
+    calibStatus.textContent = 'Image shoulders marked. Now mark them on the camera, or enable auto-tracking.';
+  }
+});
+
+markCameraBtn.addEventListener('click', ()=>{
+  if(video.readyState < 2){ calibStatus.textContent = 'Start the camera first.'; return; }
+  camShoulderL = null; camShoulderR = null;
+  markingCameraStep = 1;
+  calibStatus.textContent = 'Tap your LEFT shoulder directly on the camera preview above.';
+});
+
+applyCalibBtn.addEventListener('click', ()=>{
+  if(!imgShoulderL || !imgShoulderR || !camShoulderL || !camShoulderR){
+    calibStatus.textContent = 'Mark shoulders on both the image and the camera first.';
+    return;
+  }
+  const t = computeGarmentTransform(camShoulderL, camShoulderR);
+  pos = t.pos; scaleW = t.w; scaleH = t.h; anchorX = t.anchorX; anchorY = t.anchorY; rotation = t.rotation;
+  autoTrackToggle.checked = false;
+  updateModeUI();
+  calibStatus.textContent = 'Calibration applied — drag or use the sliders above to fine-tune.';
+  draw();
+});
+
+clearCalibBtn.addEventListener('click', ()=>{
+  imgShoulderL = imgShoulderR = camShoulderL = camShoulderR = null;
+  markingImageStep = markingCameraStep = 0;
+  imgMarkCanvas.style.display = 'none';
+  calibStatus.textContent = 'Calibration marks cleared.';
 });
 
 function loadScript(url){
@@ -453,12 +567,49 @@ async function ensureDetector(){
 }
 
 function mapVideoPointToCanvas(vx, vy){
+  // The pose model always sees the RAW (unmirrored) video frame, regardless of
+  // any CSS mirroring applied for display. If we're showing a mirrored view,
+  // flip the x-coordinate first so tracked points match what's on screen.
+  if(mirrorToggle.checked) vx = video.videoWidth - vx;
   const vw = video.videoWidth, vh = video.videoHeight;
   const cw = canvas.width, ch = canvas.height;
   const s = Math.max(cw / vw, ch / vh);
   const dw = vw * s, dh = vh * s;
   const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
   return { x: vx * s + ox, y: vy * s + oy };
+}
+
+// Given two points, treats whichever is further left on screen as the "left"
+// reference, regardless of which anatomical side the pose model assigned it to
+// — this stays correct whether or not the camera is mirrored.
+function angleFromPoints(pA, pB){
+  const left = pA.x <= pB.x ? pA : pB;
+  const right = pA.x <= pB.x ? pB : pA;
+  return Math.atan2(left.y-right.y, left.x-right.x) * 180/Math.PI;
+}
+
+// Computes position/size/rotation for the garment so that its calibrated
+// image-space shoulder points (imgShoulderL/R) land exactly on the given
+// target canvas points (targetL/R — either live-tracked or manually marked).
+function computeGarmentTransform(targetL, targetR){
+  const left = targetL.x <= targetR.x ? targetL : targetR;
+  const right = targetL.x <= targetR.x ? targetR : targetL;
+  const targetDist = Math.hypot(right.x-left.x, right.y-left.y);
+  const targetAngle = angleFromPoints(targetL, targetR);
+  const targetMid = {x:(left.x+right.x)/2, y:(left.y+right.y)/2};
+
+  const iw = baseImg.width, ih = baseImg.height;
+  const imgDist = Math.hypot(imgShoulderR.x-imgShoulderL.x, imgShoulderR.y-imgShoulderL.y);
+  const drawScale = targetDist / imgDist;
+
+  return {
+    pos: targetMid,
+    w: iw * drawScale,
+    h: ih * drawScale,
+    anchorX: ((imgShoulderL.x+imgShoulderR.x)/2) / iw,
+    anchorY: ((imgShoulderL.y+imgShoulderR.y)/2) / ih,
+    rotation: targetAngle
+  };
 }
 
 async function poseLoop(){
@@ -482,11 +633,12 @@ async function poseLoop(){
           const pL = mapVideoPointToCanvas(earL.x, earL.y);
           const pR = mapVideoPointToCanvas(earR.x, earR.y);
           const headWidth = Math.hypot(pR.x-pL.x, pR.y-pL.y);
-          const angle = Math.atan2(pL.y-pR.y, pL.x-pR.x) * 180/Math.PI;
+          const angle = angleFromPoints(pL, pR);
 
           pos = {x: (pL.x+pR.x)/2, y: (pL.y+pR.y)/2};
           scaleW = headWidth * 2.3 * fit;
           scaleH = 0; // keep the hat image's own proportions
+          anchorX = 0.5;
           anchorY = 0.92; // anchor near the BOTTOM of the hat image, so it sits on top of the head
           rotation = angle;
           draw();
@@ -499,24 +651,38 @@ async function poseLoop(){
         if(ls && rs && ls.score > 0.3 && rs.score > 0.3){
           const shoulderL = mapVideoPointToCanvas(ls.x, ls.y);
           const shoulderR = mapVideoPointToCanvas(rs.x, rs.y);
-          const midX = (shoulderL.x + shoulderR.x)/2;
-          const midY = (shoulderL.y + shoulderR.y)/2;
-          const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
-          const angle = Math.atan2(shoulderL.y-shoulderR.y, shoulderL.x-shoulderR.x) * 180/Math.PI;
 
-          let torsoLen = shoulderDist * 1.4;
-          if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
-            const hipL = mapVideoPointToCanvas(lh.x, lh.y);
-            const hipR = mapVideoPointToCanvas(rh.x, rh.y);
-            const hipMidY = (hipL.y + hipR.y)/2;
-            torsoLen = Math.max(hipMidY - midY, shoulderDist);
+          if(imgShoulderL && imgShoulderR && baseImg){
+            // Use the manual calibration for a much more accurate fit.
+            const t = computeGarmentTransform(shoulderL, shoulderR);
+            pos = t.pos;
+            scaleW = t.w * fit;
+            scaleH = t.h * fit;
+            anchorX = t.anchorX;
+            anchorY = t.anchorY;
+            rotation = t.rotation;
+          } else {
+            // Fallback generic heuristic (no calibration marked yet).
+            const midX = (shoulderL.x + shoulderR.x)/2;
+            const midY = (shoulderL.y + shoulderR.y)/2;
+            const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
+            const angle = angleFromPoints(shoulderL, shoulderR);
+
+            let torsoLen = shoulderDist * 1.4;
+            if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
+              const hipL = mapVideoPointToCanvas(lh.x, lh.y);
+              const hipR = mapVideoPointToCanvas(rh.x, rh.y);
+              const hipMidY = (hipL.y + hipR.y)/2;
+              torsoLen = Math.max(hipMidY - midY, shoulderDist);
+            }
+
+            pos = {x: midX, y: midY};
+            scaleW = shoulderDist * 1.9 * fit;
+            scaleH = torsoLen * 1.35 * fit;
+            anchorX = 0.5;
+            anchorY = 0.04;
+            rotation = angle;
           }
-
-          pos = {x: midX, y: midY};
-          scaleW = shoulderDist * 1.9 * fit;
-          scaleH = torsoLen * 1.35 * fit;
-          anchorY = 0.04;
-          rotation = angle;
           draw();
         } else {
           statusEl.textContent = 'Tracking on — step back so both shoulders are visible.';
