@@ -96,6 +96,13 @@
 
   <div class="panel">
     <h2>Camera & Tracking</h2>
+    <div class="row">
+      <label>Track & fit to</label>
+      <select id="garmentType" style="flex:1; font:inherit; font-size:.85rem; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink);">
+        <option value="torso" selected>Torso (shirts, jackets)</option>
+        <option value="head">Head (hats, glasses)</option>
+      </select>
+    </div>
     <div class="switch-row">
       <span>Auto body-tracking</span>
       <label class="toggle"><input type="checkbox" id="autoTrack"><span class="slider"></span></label>
@@ -103,6 +110,16 @@
     <div class="row" id="fitRow">
       <label>Fit size</label>
       <input type="range" id="fitAdjust" min="50" max="200" value="100">
+    </div>
+    <div class="row">
+      <label>Camera shape</label>
+      <select id="aspectSelect" style="flex:1; font:inherit; font-size:.85rem; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink);">
+        <option value="3 / 4" selected>Portrait (3:4)</option>
+        <option value="9 / 16">Tall portrait (9:16)</option>
+        <option value="1 / 1">Square (1:1)</option>
+        <option value="16 / 9">Landscape (16:9)</option>
+        <option value="4 / 3">Landscape (4:3)</option>
+      </select>
     </div>
     <div class="row" id="scaleRow">
       <label>Size (manual)</label>
@@ -125,6 +142,10 @@
     <div class="switch-row">
       <span>Remove white background automatically</span>
       <label class="toggle"><input type="checkbox" id="bgRemove" checked><span class="slider"></span></label>
+    </div>
+    <div class="row">
+      <label>Edge feather</label>
+      <input type="range" id="feather" min="0" max="8" value="2">
     </div>
   </div>
 
@@ -150,6 +171,9 @@ const statusEl = document.getElementById('status');
 const scaleRange = document.getElementById('scale');
 const rotateRange = document.getElementById('rotate');
 const fitAdjust = document.getElementById('fitAdjust');
+const aspectSelect = document.getElementById('aspectSelect');
+const featherRange = document.getElementById('feather');
+const garmentType = document.getElementById('garmentType');
 const autoTrackToggle = document.getElementById('autoTrack');
 const bgRemoveToggle = document.getElementById('bgRemove');
 const scaleRow = document.getElementById('scaleRow');
@@ -157,6 +181,7 @@ const rotateRow = document.getElementById('rotateRow');
 const fitRow = document.getElementById('fitRow');
 
 let img = null;
+let baseImg = null; // the clean (trimmed, background-removed) image, before feather is applied
 let pos = {x:0,y:0};
 let scale = 150;
 let rotation = 0;
@@ -254,23 +279,39 @@ function trimTransparentMargins(canvas){
   return trimmed;
 }
 
+function featherImage(canvas, radiusPx){
+  if(radiusPx <= 0) return canvas;
+  const out = document.createElement('canvas');
+  out.width = canvas.width; out.height = canvas.height;
+  const octx = out.getContext('2d');
+  octx.filter = `blur(${radiusPx}px)`;
+  octx.drawImage(canvas, 0, 0);
+  return out;
+}
+
+function applyFeather(){
+  const amount = +featherRange.value;
+  img = (amount > 0 && baseImg) ? featherImage(baseImg, amount) : baseImg;
+  draw();
+}
+
 function applyImage(source, allowBgRemoval){
   if(bgRemoveToggle.checked && allowBgRemoval){
     try{
       let processed = removeWhiteBackground(source);
-      processed = trimTransparentMargins(processed); // crop to the actual garment, so its top edge = shoulder line
-      img = processed;
+      processed = trimTransparentMargins(processed);
+      baseImg = processed;
       statusEl.textContent = 'Loaded — background removed and cropped to the garment shape.';
     }catch(e){
-      img = source;
+      baseImg = source;
       statusEl.textContent = 'Loaded, but this image can\'t have its background removed (the site blocks that). Try saving it and using "Upload Image" instead.';
     }
   } else {
-    img = source;
+    baseImg = source;
     statusEl.textContent = 'Loaded — drag to position (or turn on auto-tracking).';
   }
   pos = {x: canvas.width/2, y: canvas.height/2};
-  draw();
+  applyFeather();
 }
 
 function loadImageFile(file){
@@ -428,37 +469,58 @@ async function poseLoop(){
       const poses = await detector.estimatePoses(video);
       const kp = {};
       if(poses[0]) poses[0].keypoints.forEach(k => kp[k.name] = k);
-      const ls = kp['left_shoulder'], rs = kp['right_shoulder'];
-      const lh = kp['left_hip'], rh = kp['right_hip'];
-      if(ls && rs && ls.score > 0.3 && rs.score > 0.3){
-        const shoulderL = mapVideoPointToCanvas(ls.x, ls.y);
-        const shoulderR = mapVideoPointToCanvas(rs.x, rs.y);
-        const midX = (shoulderL.x + shoulderR.x)/2;
-        const midY = (shoulderL.y + shoulderR.y)/2;
-        const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
-        // The camera feed is NOT mirrored, so the person's anatomical LEFT shoulder
-        // appears on the screen's RIGHT side. We measure the angle from screen-right
-        // to screen-left (i.e. from shoulderL to shoulderR) so the garment sits upright
-        // instead of rotated ~180°.
-        const angle = Math.atan2(shoulderL.y-shoulderR.y, shoulderL.x-shoulderR.x) * 180/Math.PI;
+      const fit = (+fitAdjust.value) / 100;
 
-        let torsoLen = shoulderDist * 1.4;
-        if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
-          const hipL = mapVideoPointToCanvas(lh.x, lh.y);
-          const hipR = mapVideoPointToCanvas(rh.x, rh.y);
-          const hipMidY = (hipL.y + hipR.y)/2;
-          torsoLen = Math.max(hipMidY - midY, shoulderDist);
+      if(garmentType.value === 'head'){
+        // Ears give the most reliable head-width reference; fall back to eyes
+        // if ears aren't visible (e.g. facing very straight-on).
+        let earL = kp['left_ear'], earR = kp['right_ear'];
+        if(!earL || earL.score < 0.3) earL = kp['left_eye'];
+        if(!earR || earR.score < 0.3) earR = kp['right_eye'];
+
+        if(earL && earR && earL.score > 0.3 && earR.score > 0.3){
+          const pL = mapVideoPointToCanvas(earL.x, earL.y);
+          const pR = mapVideoPointToCanvas(earR.x, earR.y);
+          const headWidth = Math.hypot(pR.x-pL.x, pR.y-pL.y);
+          const angle = Math.atan2(pL.y-pR.y, pL.x-pR.x) * 180/Math.PI;
+
+          pos = {x: (pL.x+pR.x)/2, y: (pL.y+pR.y)/2};
+          scaleW = headWidth * 2.3 * fit;
+          scaleH = 0; // keep the hat image's own proportions
+          anchorY = 0.92; // anchor near the BOTTOM of the hat image, so it sits on top of the head
+          rotation = angle;
+          draw();
+        } else {
+          statusEl.textContent = 'Tracking on — make sure your face is visible.';
         }
-
-        const fit = (+fitAdjust.value) / 100;
-        pos = {x: midX, y: midY};
-        scaleW = shoulderDist * 1.9 * fit;
-        scaleH = torsoLen * 1.35 * fit;
-        anchorY = 0.04; // garment image is now trimmed to its own edges, so its top ≈ shoulder line
-        rotation = angle;
-        draw();
       } else {
-        statusEl.textContent = 'Tracking on — step back so both shoulders are visible.';
+        const ls = kp['left_shoulder'], rs = kp['right_shoulder'];
+        const lh = kp['left_hip'], rh = kp['right_hip'];
+        if(ls && rs && ls.score > 0.3 && rs.score > 0.3){
+          const shoulderL = mapVideoPointToCanvas(ls.x, ls.y);
+          const shoulderR = mapVideoPointToCanvas(rs.x, rs.y);
+          const midX = (shoulderL.x + shoulderR.x)/2;
+          const midY = (shoulderL.y + shoulderR.y)/2;
+          const shoulderDist = Math.hypot(shoulderR.x-shoulderL.x, shoulderR.y-shoulderL.y);
+          const angle = Math.atan2(shoulderL.y-shoulderR.y, shoulderL.x-shoulderR.x) * 180/Math.PI;
+
+          let torsoLen = shoulderDist * 1.4;
+          if(lh && rh && lh.score > 0.3 && rh.score > 0.3){
+            const hipL = mapVideoPointToCanvas(lh.x, lh.y);
+            const hipR = mapVideoPointToCanvas(rh.x, rh.y);
+            const hipMidY = (hipL.y + hipR.y)/2;
+            torsoLen = Math.max(hipMidY - midY, shoulderDist);
+          }
+
+          pos = {x: midX, y: midY};
+          scaleW = shoulderDist * 1.9 * fit;
+          scaleH = torsoLen * 1.35 * fit;
+          anchorY = 0.04;
+          rotation = angle;
+          draw();
+        } else {
+          statusEl.textContent = 'Tracking on — step back so both shoulders are visible.';
+        }
       }
     }
   }catch(e){
@@ -499,6 +561,11 @@ autoTrackToggle.addEventListener('change', async ()=>{
   }
 });
 fitAdjust.addEventListener('input', draw);
+featherRange.addEventListener('input', applyFeather);
+aspectSelect.addEventListener('change', ()=>{
+  stage.style.aspectRatio = aspectSelect.value;
+  requestAnimationFrame(resizeCanvas); // wait one frame for the new layout size to apply
+});
 
 const findBtn = document.getElementById('findBtn');
 const pageUrlInput = document.getElementById('pageUrl');
