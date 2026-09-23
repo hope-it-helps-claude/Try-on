@@ -337,6 +337,9 @@ document.getElementById('resetBtn').addEventListener('click', ()=>{
 
 async function ensureDetector(){
   if(detector) return detector;
+  if(typeof tf === 'undefined' || typeof poseDetection === 'undefined'){
+    throw new Error('Pose-tracking library failed to load from the CDN (check your internet connection, an ad-blocker, or open the browser console for the exact error).');
+  }
   statusEl.textContent = 'Loading pose-tracking model (first time only)…';
   await tf.setBackend('webgl');
   await tf.ready();
@@ -344,7 +347,7 @@ async function ensureDetector(){
     poseDetection.SupportedModels.MoveNet,
     { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
   );
-  statusEl.textContent = 'Pose model ready.';
+  statusEl.textContent = 'Pose model ready — move into frame.';
   return detector;
 }
 
@@ -390,9 +393,16 @@ async function poseLoop(){
         anchorY = 0.14;
         rotation = angle;
         draw();
+      } else {
+        statusEl.textContent = 'Tracking on — step back so both shoulders are visible.';
       }
     }
-  }catch(e){ /* keep looping even if a single frame fails */ }
+  }catch(e){
+    console.error('Pose tracking frame error:', e);
+    statusEl.textContent = 'Tracking error: ' + e.message;
+    poseLoopRunning = false;
+    return; // stop the loop instead of erroring every frame silently
+  }
   requestAnimationFrame(poseLoop);
 }
 
@@ -405,8 +415,21 @@ autoTrackToggle.addEventListener('change', async ()=>{
       updateModeUI();
       return;
     }
-    await ensureDetector();
-    if(!poseLoopRunning) poseLoop();
+    if(!img){
+      statusEl.textContent = 'Load a clothing image first (upload or find one) — auto-tracking has nothing to attach yet.';
+      autoTrackToggle.checked = false;
+      updateModeUI();
+      return;
+    }
+    try{
+      await ensureDetector();
+      if(!poseLoopRunning) poseLoop();
+    }catch(err){
+      console.error('Pose detector failed to start:', err);
+      statusEl.textContent = 'Auto-tracking could not start: ' + err.message;
+      autoTrackToggle.checked = false;
+      updateModeUI();
+    }
   } else {
     statusEl.textContent = 'Manual mode.';
   }
